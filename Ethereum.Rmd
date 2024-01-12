@@ -1,0 +1,436 @@
+---
+title: "Forecasting Cryptocurrency Prices (ETH) Using Various Time Series Models"
+author: "Johan Chua, Nicholas Delianedis, Grace Pham"
+date: "`r format(Sys.Date(), '%D')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    code_folding: show
+---
+
+```{r setup, include = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(knitr)
+library(dynlm)
+library(jtools)
+library(quantmod)
+library(xts)
+library(ggplot2)
+library(dplyr)
+library(forecast)
+library(fable)
+library(vars)
+library(fable.prophet)
+library(fpp3)
+```
+
+\newpage
+
+# I Introduction
+In this project, we use a variety of methods to forecast and model the price of the Ethereum cryptocurrency. Ethereum is a digital currency that serves as a decentralized application and smart contract platform. The dataset we used includes the daily Ethereum price from January 1, 2017 to December 4, 2023, sourced from the Federal Reserve Bank of St. Louis (FRED). We will estimate an ARIMA, ETS, Holt-Winters, NNETAR, Prophet, and forecast combination. Using these trained models, we generate forecasts for future Ethereum prices. By forecasting and combining these models, we intend to improve our understanding of Ethereum's market dynamics, offering insightful information that could help stakeholders, analysts, and investors make more informed decisions. 
+
+\newpage
+
+# II Results
+
+## (a) Time Series Plot
+```{r}
+eth <- read.csv("ETH.csv")
+eth_ts <- ts(log(eth$CBETHUSD), start = c(2017,1), frequency = 365)
+plot(eth_ts)
+tsdisplay(eth_ts)
+
+# train / test datasets
+eth_train <- window(eth_ts, end = c(2022, 365))
+eth_test <- window(eth_ts, start = c(2023, 1))
+```
+\newpage
+
+## (b) ARIMA
+```{r}
+# model selection
+eth_arima <- auto.arima(eth_train)
+
+# model forecast
+eth_arimaforecast <- forecast(eth_arima, h = length(eth_test))
+autoplot(eth_arimaforecast) + autolayer(eth_test)
+
+# model diagnostics
+checkresiduals(eth_arimaforecast)
+tsdisplay(eth_arimaforecast$residuals)
+accuracy(eth_arimaforecast, eth_test)
+```
+
+First we use the auto.arima function to estimate our ARIMA model. The model it estimated was an ARIMA(4,1,1). When looking at the residual plots, there are some significant lags, indicating serial autocorrelation. We then forecast our ARIMA model and plot. Looking at the rmse values we see that our training set performs better than the test set. 
+
+\newpage
+
+## (c) ETS
+```{r}
+# model selection
+eth_ets <- ets(eth_train)
+
+# model forecast
+eth_etsforecast <- forecast(eth_ets, h = length(eth_test))
+autoplot(eth_etsforecast) + autolayer(eth_test)
+
+# model diagnostics
+checkresiduals(eth_etsforecast)
+tsdisplay(eth_etsforecast$residuals)
+accuracy(eth_etsforecast, eth_test)
+```
+
+Here we fit an ETS model to the training data, which chose to use additive errors, damped additive trend, and no seasonality.  The ETS forecast just used the last mean, so the forecast is not very useful for our purposes.  When looking at the autocorrelation functions of the residuals, we see that the residuals look like white noise, so the model captures most of the data’s dynamics.
+
+\newpage
+
+## (d) Holt-Winters
+```{r}
+# model selection
+eth_hw <- HoltWinters(eth_train)
+
+# model forecast
+eth_hwforecast <- forecast(eth_hw, h = length(eth_test))
+autoplot(eth_hwforecast) + autolayer(eth_test)
+
+# model diagnostics
+checkresiduals(eth_hwforecast)
+tsdisplay(eth_hwforecast$residuals)
+accuracy(eth_hwforecast, eth_test)
+```
+
+The Holt-Winters forecast that we fit to our data uses trend and an additive seasonal element.  We see that the Holt-Winters forecast fit the data very well, and has much lower error measurements than the other models.  When looking at the autocorrelation functions of the residuals, we see that the residuals look like white noise except for spikes at lags 1, 365 (one year), 730 (two years), so a seasonal component may capture more dynamics, but the model is very good as is.
+
+\newpage
+
+## (e) NNETAR
+```{r}
+# model selection
+eth_nnetar <- nnetar(eth_train)
+
+# model forecast
+eth_nnetarforecast <- forecast(eth_nnetar, PI = TRUE, h = length(eth_test))
+autoplot(eth_nnetarforecast) + autolayer(eth_test)
+
+# model diagnostics
+checkresiduals(eth_nnetar)
+accuracy(eth_nnetarforecast$mean, eth_test)
+```
+
+Using neural networks, we fit a model to our data and use it to forecast our testing set. We find that our forecast underestimated the actual testing data set values. Analyzing our NNETAR model residual plots, we see that the residuals do take the form of white noise, with constant variance and an overall mean centered around zero. We also see the residuals are normally distributed. A potential concern is the residual right at the start of 2020 that is much more negative that its surrounding residuals. This reflects the shock due to the COVID pandemic. Lastly, to analyzing testing error, we report a RMSE of 0.386241.
+
+\newpage
+
+## (f) Prophet
+```{r, include = FALSE}
+eth2 <- aus_production
+```
+
+```{r}
+# model selection
+eth_tsibble <- eth2 %>% 
+  add_column(ETH = eth_train[seq(from = 1, to = length(eth_train), 
+                                 along.with = eth2$Quarter)])
+
+eth_prophet <- eth_tsibble |>
+  model(prophet(ETH ~ season(period = 4, order = 2, type = "multiplicative")))
+
+# model forecast
+eth_prophetforecast <- eth_prophet |> forecast(h = "4 years")
+eth_prophetforecast |> autoplot(eth_tsibble) +
+  labs(x = "Year", y = "ETH Price (USD)") + ggtitle("Forecast from Prophet")
+
+# model diagnostics
+accuracy(eth_prophetforecast$.mean, eth_test[seq(from = 1, to = length(eth_test), length = 16)])
+```
+
+Using Facebook's Prophet model, we find that our forecast is overestimated. We see that the forecast predicts a strong upwards linear trend with minimal seasonality or cycles. Furthermore, we report a RMSE of 0.8600636 between our forecast and the testing dataset.
+
+\newpage
+
+## (g) Forecast Combination
+```{r}
+# model forecast
+eth_combination <- (eth_arimaforecast[["mean"]] + eth_etsforecast[["mean"]] + 
+                      eth_hwforecast[["mean"]] + eth_nnetarforecast[["mean"]])/4
+autoplot(eth_ts) +
+  autolayer(eth_etsforecast, series="ETS", PI=FALSE) +
+  autolayer(eth_arimaforecast, series="ARIMA", PI=FALSE) +
+  autolayer(eth_nnetarforecast, series="NNAR", PI=FALSE) +
+  autolayer(eth_hwforecast, series="Holt-Winters", PI=FALSE) +
+  autolayer(eth_combination, series="Combination") +
+  xlab("Year") + ggtitle("Combination Forecast for ETH")
+
+# model diagnostics
+tsdisplay(eth_combination)
+accuracy(eth_combination, eth_test)
+```
+
+```{r, echo = FALSE}
+# summary table
+kable(data.frame(Model = c("ARIMA", "ETS", "Holt-Winters", "NNETAR", "Prophet", "Combination"),
+                 RMSE = c(
+                   accuracy(eth_arimaforecast$mean, eth_test)[2],
+                   accuracy(eth_etsforecast$mean, eth_test)[2],
+                   accuracy(eth_hwforecast$mean, eth_test)[2],
+                   accuracy(eth_nnetarforecast$mean, eth_test)[2],
+                   accuracy(eth_prophetforecast$.mean, eth_test[seq(from = 1, to = length(eth_test), length = 16)])[2],
+                   accuracy(eth_combination, eth_test)[2]
+                   )))
+```
+
+Following the Irrelevance Proposition, which states that we should always combine forecasts (as long as they are reasonable) unless we have infinite data and a complete information set, we decided to combine all our forecasts except the Prophet forecast to create our forecast combination. We excluded the Prophet model due to its relatively high RMSE, which indicated to us that including it will most likely disadvantage our combination forecast more than it will benefit it. Even then, it appears that our forecast combination of ARIMA, ETS, Holt-Winters and NNETAR performed worse than half of the individual forecasts it included. Thus, evaluating on the criteria of Testing RMSE, our best model is the ARIMA model, followed by the Holt-Winters, Combination, NNETAR, ETS, and Prophet.
+
+\newpage
+
+# III Conclusions and Future Work
+
+To sum, we used six models to try to capture all of the dynamics of the price of the crypto coin Ethereum between January 1, 2017 and December 4, 2023. We started by taking the log of our data so that we could deal with changes in price instead of price itself, and then splitting our data into training and testing data, with all 2023 data as our testing data. 
+
+Our first model was an ARIMA(4,1,1) model, which indicates that there was significant autocorrelation of up to four days behind, and also of one day’s lag of the error. The model also included a trend component, as indicated by I(1). The model performed well on the training set, but it did significantly worse on the testing data, so it may not be the best model to use.
+
+Second, we fitted an ETS model to our data, and the model chose to use additive errors, damped additive trend, and no seasonality. Similarly to the ARIMA model, the ETS model did much worse on the testing data than on the training data, and forecasted an almost fully immobile model, so we may not want to use this model either.
+
+Next, we used a Holt-Winters model, which seemed to forecast the data very well, and uses trend as well as an additive seasonal model, which is interesting because most of our other models concluded that there is no seasonality in our data. The plot of the forecast on the testing data showed that it followed the general direction of the data well, and stayed relatively close to it most of the time. The error metrics for the Holt-Winter model indicate that the testing model errors are closer to the training model errors than was the case for either the ARIMA or ETS model, so the Holt-Winters forecast may be one that we will want to consider later.
+
+After that, we used a neural network model, NNETAR, which requires a higher level of computing power to fit a model. Our NNETAR forecast worked fairly well, staying relatively close to the testing data, while lagging behind the data in terms of general trend. According to the error metrics, the NNETAR model did very well on the testing data, so we may also want to consider this model later, in addition to the Holt-Winters model. 
+
+Next, we fit a Prophet model to our data, which is an additive model that works best with strongly seasonal data, so we would not expect it to fare particularly well on our data. We see this in the plot of the forecast, which shows an extreme jump from the last data point in the training data, which does not reflect our data well at all, since our data is continuous, and does not even have a strongly positive trend.
+
+Finally, we combined four of our previous five models, all except Prophet, since that model performed especially poorly, to get an improved model that combines all positive aspects of those four component models. The error metrics for the combined model seem very good, and by the Irrelevance Proposition, this combined forecast should be an improvement on the individual models, so we should also consider this one.
+
+To conclude, the Holt-Winters model, the NNETAR model, and the combined forecast worked well on our data, and while any of these would be good models to use for this data, we think that ARIMA and Holt-Winters models would be the best two to use due to their relative simplicity compared to the neural network model and the combined forecast, as well as their relatively low error metrics. To improve our models, we could try other models that do not require seasonality in the data, such as the Kalman Filter, to obtain more optimal fits to our data. Although, in doing so, we would lose much of the economic interpretability In addition, we could fine tune some of the parameters on our models, such as the number of nodes on our neural network model, and we could try models on different transformations of the data to see if any other transformations work better than on the one we used.
+
+\newpage
+
+# IV References
+
+Coinbase, Coinbase Ethereum [CBETHUSD], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/CBETHUSD, December 4, 2023.
+
+
+
+
+
+
+
+
+
+
+```{r, eval = FALSE, include = FALSE}
+eth_train[seq(from = 1, to = length(eth_train), along.with = aus_production$Quarter)]
+
+?seq_len
+length(eth_train)/nrow(eth_tsibble)
+nrow(eth_tsi)
+
+  cement <- aus_production |>
+  filter(year(Quarter) >= 1988)
+train <- cement |>
+  filter(year(Quarter) <= 2007)
+
+class(train$Quarter)
+```
+
+```{r, eval = FALSE, include = FALSE}
+# setup
+eth <- read.csv("ETH.csv")
+eth_ts <- ts(log(eth$CBETHUSD), start = c(2017,1), frequency = 365)
+plot(eth_ts)
+tsdisplay(eth_ts)
+eth_train <- window(eth_ts, end = c(2022, 365))
+eth_test <- window(eth_ts, start = c(2023, 1))
+
+# model selection
+eth_tsibble <- tsibble::as_tsibble(eth_train, tz = "UTC")
+eth_tsibble$index <- yearquarter(seq(as.Date('2017-01-01'),as.Date('2022-12-30'),'days'))
+
+eth_tsibble$index <- dint::as_date_yq(eth_tsibble$index)
+
+
+eth_tsibble$index <- rep(train[,1]$Quarter, length = nrow(eth_tsibble))
+
+model(eth_tsibble, prophet(value ~ season(period = 365, order = 10)))
+
+
+model(train[,c(1,5)], prophet(Cement ~ season(period = 4, order = 2, type = "multiplicative")))
+
+dint::as_yearquarter(eth_tsibble$index)
+
+train[,1]
+
+?fable.prophet::prophet
+
+
+t <- seq(as.Date('2017-01-01'),as.Date('2022-12-31'),'days')
+eth_tsibble <- as_tsibble(eth_train), index = t, tz = "UTC")
+as_tsibble(eth_train)
+as_tsibble(eth_train, index = seq(as.Date('2017-01-01'),as.Date('2022-12-31'),'days'))
+
+
+eth_tsibble <- tsibble::as_tsibble(eth_train, index = t)
+eth_tsibble <- eth_tsibble[seq(from = 1, to = nrow(eth_tsibble), by = 30),]
+
+seq(1, 10, by = 4)
+
+eth_prophet <- eth_tsibble |> 
+  prophet(value ~ season(order = 2, type = "multiplicative"))
+forecast(eth_prophet, h = 2)
+
+=======
+eth_tsibble <- as_tsibble(eth_train)
+
+forecast(prophet(as_tsibble(eth_train)$value ~ as_tsibble(eth_train)$value))
+
+
+eth_prophet <- 
+  
+  as_tsibble(c(1:3), index = c(1, 2, 3))
+```
+
+
+```{r, eval = FALSE, include = FALSE}
+cement <- aus_production |>
+  filter(year(Quarter) >= 1988)
+train <- cement |>
+  filter(year(Quarter) <= 2007)
+
+fit <- train |>
+  model(
+    prophet = prophet(Cement ~ season(period = 4, order = 2,
+                                    type = "multiplicative"))
+  )
+
+
+model(train, prophet = prophet(Cement ~ season(period = 4, order = 2, type = "multiplicative")))
+      
+forecast(fit, h = 2)
+```
+
+```{r, eval = FALSE, include = FALSE}
+cement <- aus_production |>
+  filter(year(Quarter) >= 1988)
+train <- cement |>
+  filter(year(Quarter) <= 2007)
+fit <- train |>
+  model(
+    prophet = prophet(Cement ~ season(period = 4, order = 2,
+                                    type = "multiplicative"))
+  )
+forecast(fit, h = 2)
+
+# model selection
+t = seq(from = 2017, to = 2023.926, length = nrow(eth))
+
+seq(as.Date('2017-01-01'),as.Date('2023-01-01'),'weeks')
+
+        as_tsibble(eth_ts)
+eth_tsibble <- as_tsibble(eth_ts, index = t)
+
+
+eth_tsibble <- data.frame(t = seq(from = 2017, to = 2023.926, length = nrow(eth)),
+                          CBETHUSD <- eth$CBETHUSD)
+eth_tsibble <- ?tsibble::as_tsibble(eth_tsibble)               
+
+eth
+
+t <- 
+eth_tsibble <- as.dataframe
+
+# eth$observation_date <- as.Date(eth$observation_date)
+eth <- as_tsibble(eth)
+eth_prophet <- eth |> prophet(CBETHUSD ~ season(period = 4, order = 2, type = "multiplicative"))
+
+forecast(eth_prophet, h = 2)
+
+eth_prophet <- prophet(eth$CBETHUSD)
+forecast(eth_prophet, h = 2)
+
+
+forecast(prophet(eth), h = 1)
+forecast(prophet(eth_ts), h = 1)
+####
+Error in attr(data, "tsp") <- c(start, end, frequency) : 
+  object is not a matrix
+> 
+ ### 
+
+
+fc <- eth_prophet |> forecast(eth_prophet, h = 2)
+predict(eth_prophet, n.ahead = 2)
+
+
+cement <- aus_production |>
+  filter(year(Quarter) >= 1988)
+train <- cement |>
+  filter(year(Quarter) <= 2007)
+fit <- train |>
+  model(
+    prophet = prophet(Cement ~ season(period = 4, order = 2,
+                                    type = "multiplicative"))
+  )
+forecast(fit, h = 2)
+
+test <- aus_production |> prophet(Cement ~ season(period = 4, order = 2, type = "multiplicative"))
+forecast(test, h = 2)
+```
+
+```{r, eval = FALSE, include = FALSE}
+# model selection
+eth
+
+
+eth_prophet <- prophet( ~ season(period = 7, order = 2, type = "multiplicative"))
+
+eth_prophet <- eth_train |> model(prophet(x ~ season(period = 365, order = 2, type = "additive")))
+                  
+
+                
+    arima = ARIMA(Cement),
+    ets = ETS(Cement),
+    prophet = prophet(Cement ~ season(period = 4, order = 2,
+                                    type = "multiplicative"))
+  )
+
+?prophet
+# model forecast
+eth_prophetforecast <- plot(forecast(eth_prophet, h = length(eth_test)))
+autoplot(eth_ts) + autolayer(eth_nnetarforecast$mean)
+
+# model diagnostic
+checkresiduals(eth_nnetar)
+accuracy(eth_nnetarforecast$mean, eth_test)
+
+=====
+library(lubridate)
+eth$observation_date <- as.Date(eth$observation_date)
+
+fit <- model(eth, prophet(CBETHUSD ~ season(period = 4, order = 2, type = "multiplicative")))
+fc <- fit |> forecast(h = "2 years 6 months")
+
+  
+  
+library(fable.prophet)
+cement <- aus_production |>
+  filter(year(Quarter) >= 1988)
+train <- cement |>
+  filter(year(Quarter) <= 2007)
+fit <- train |>
+  model(
+    arima = ARIMA(Cement),
+    ets = ETS(Cement),
+    prophet = prophet(Cement ~ season(period = 4, order = 2,
+                                    type = "multiplicative"))
+  )
+fc <- fit |> forecast(h = "2 years 6 months")
+fc |> autoplot(cement)
+```
+
+
+
